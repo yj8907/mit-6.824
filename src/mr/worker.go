@@ -1,10 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,7 +27,6 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
@@ -43,22 +45,39 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func CallExample() {
+func SpawnWorker(workerId int,
+	mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	for {
 
-	// fill in the argument(s).
-	args.X = 99
+		args := WorkerArgs{
+			workerId: workerId,
+			request:  "jobRequest",
+		}
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+		reply := MasterReply{}
 
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
+		// send the RPC request, wait for the reply.
+		call("Master.Request", &args, &reply)
+		if reply.task == "map" {
+			intermediate := []KeyValue{}
+			filename := reply.content
+			file, err := os.Open(filename)
 
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+			if err != nil {
+				log.Fatalf("cannot open %v", filename)
+			}
+			content, err := ioutil.ReadAll(file)
+			if err != nil {
+				log.Fatalf("cannot read %v", filename)
+			}
+			file.Close()
+			kva := mapf(filename, string(content))
+			intermediate = append(intermediate, kva...)
+
+		}
+	}
+
 }
 
 //
