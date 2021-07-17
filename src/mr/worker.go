@@ -1,12 +1,14 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
+	"strconv"
 )
 
 //
@@ -45,7 +47,7 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func SpawnWorker(workerId int,
+func SpawnWorker(workerId int, nReduce int,
 	mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
 	for {
@@ -74,6 +76,29 @@ func SpawnWorker(workerId int,
 			file.Close()
 			kva := mapf(filename, string(content))
 			intermediate = append(intermediate, kva...)
+
+			// enc := json.NewEncoder(file)
+			encoders := make(map[int]*json.Encoder)
+			for _, kv := range intermediate {
+				keyBucket := ihash(kv.Key) % nReduce
+				interFn := "mr-" + strconv.Itoa(reply.taskId) + "-" + strconv.Itoa(keyBucket)
+				enc, enc_ok := encoders[keyBucket]
+				if !enc_ok {
+					file, err := os.Create(interFn)
+					if err != nil {
+						log.Fatalf("cannot create %v\n", interFn)
+					}
+					enc = json.NewEncoder(file)
+					encoders[keyBucket] = enc
+				}
+				err := enc.Encode(kv)
+				if err != nil {
+					os.Remove(interFn)
+					log.Fatalf("cannot encode %v\n", kv)
+				}
+			}
+
+		} else if reply.task == "reduce" {
 
 		}
 	}

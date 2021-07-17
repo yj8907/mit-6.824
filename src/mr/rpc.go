@@ -22,6 +22,7 @@ type WorkerArgs struct {
 }
 
 type MasterReply struct {
+	taskId  int
 	task    string
 	content string
 }
