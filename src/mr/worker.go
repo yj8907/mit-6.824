@@ -8,7 +8,9 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 //
@@ -18,6 +20,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -77,11 +87,14 @@ func SpawnWorker(workerId int, nReduce int,
 			kva := mapf(filename, string(content))
 			intermediate = append(intermediate, kva...)
 
-			// enc := json.NewEncoder(file)
+			// save map intermediate value
 			encoders := make(map[int]*json.Encoder)
+			var interFn string
+			var keyBucket int
+			interFnPrefix := "mr-" + strconv.Itoa(reply.taskId)
 			for _, kv := range intermediate {
-				keyBucket := ihash(kv.Key) % nReduce
-				interFn := "mr-" + strconv.Itoa(reply.taskId) + "-" + strconv.Itoa(keyBucket)
+				keyBucket = ihash(kv.Key) % nReduce
+				interFn = interFnPrefix + "-" + strconv.Itoa(keyBucket)
 				enc, enc_ok := encoders[keyBucket]
 				if !enc_ok {
 					file, err := os.Create(interFn)
@@ -98,11 +111,70 @@ func SpawnWorker(workerId int, nReduce int,
 				}
 			}
 
-		} else if reply.task == "reduce" {
+			// signal master task is finished
+			args = WorkerArgs{
+				workerId: workerId,
+				request:  "mapFinished",
+				content:  interFnPrefix,
+			}
+			reply = MasterReply{}
+			call("Master.Request", &args, &reply)
 
+		} else if reply.task == "reduce" {
+			kva := []KeyValue{}
+			filenames := strings.Fields(reply.content)
+			for _, filename := range filenames {
+				file, err := os.Open(filename)
+
+				if err != nil {
+					log.Fatalf("cannot open %v", filename)
+				}
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+			}
+			sort.Sort(ByKey(kva))
+			workerReduce(workerId, reducef, kva)
+		} else if reply.task == "terminate" {
+			break
 		}
 	}
 
+}
+
+func workerReduce(workerId int, reducef func(string, []string) string,
+	kva []KeyValue) {
+	oname := "mr-out-" + strconv.Itoa(workerId)
+	ofile, _ := os.Create(oname)
+
+	//
+	// call Reduce on each distinct key in intermediate[],
+	// and print the result to mr-out-0.
+
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
 }
 
 //

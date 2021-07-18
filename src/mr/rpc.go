@@ -19,6 +19,7 @@ import (
 type WorkerArgs struct {
 	workerId int
 	request  string
+	content  string
 }
 
 type MasterReply struct {
