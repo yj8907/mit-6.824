@@ -17,16 +17,19 @@ import (
 //
 
 type WorkerArgs struct {
-	workerId int
-	request  string
-	content  string
+	WorkerId string
+	Request  string
+	Content  []string
 }
 
 type MasterReply struct {
-	taskId  int
-	task    string
-	content string
+	TaskId  string
+	Task    string
+	Content []string
 }
+
+var MasterToWorkerMsg [5]string = [5]string{"map", "reduce", "terminate", "ack", "wait"}
+var WorkerToMasterMsg [3]string = [3]string{"jobRequest", "finished", "init"}
 
 // Add your RPC definitions here.
 

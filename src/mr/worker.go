@@ -10,7 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"strings"
+	"time"
 )
 
 //
@@ -46,9 +46,18 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	args := WorkerArgs{
+		Request: WorkerToMasterMsg[2],
+	}
+	reply := MasterReply{}
+	if !call("Master.Request", &args, &reply) {
+		log.Fatal("worker failed")
+	}
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+	nReduce, _ := strconv.Atoi(reply.Content[0])
+	for i := 0; i < 10; i++ {
+		go SpawnWorker("worker"+strconv.Itoa(i), nReduce, mapf, reducef)
+	}
 
 }
 
@@ -57,23 +66,26 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func SpawnWorker(workerId int, nReduce int,
+func SpawnWorker(workerId string, nReduce int,
 	mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
 	for {
 
 		args := WorkerArgs{
-			workerId: workerId,
-			request:  "jobRequest",
+			WorkerId: workerId,
+			Request:  WorkerToMasterMsg[0],
 		}
 
 		reply := MasterReply{}
 
 		// send the RPC request, wait for the reply.
-		call("Master.Request", &args, &reply)
-		if reply.task == "map" {
+		if !call("Master.Request", &args, &reply) {
+			log.Fatalf("call failed for worker: %v\n", workerId)
+		}
+
+		if reply.Task == MasterToWorkerMsg[0] {
 			intermediate := []KeyValue{}
-			filename := reply.content
+			filename := reply.Content[0]
 			file, err := os.Open(filename)
 
 			if err != nil {
@@ -89,12 +101,14 @@ func SpawnWorker(workerId int, nReduce int,
 
 			// save map intermediate value
 			encoders := make(map[int]*json.Encoder)
+			mapTempFilenames := []string{reply.TaskId, reply.Task}
 			var interFn string
 			var keyBucket int
-			interFnPrefix := "mr-" + strconv.Itoa(reply.taskId)
+			interFnPrefix := "mr-" + reply.TaskId
 			for _, kv := range intermediate {
 				keyBucket = ihash(kv.Key) % nReduce
 				interFn = interFnPrefix + "-" + strconv.Itoa(keyBucket)
+				mapTempFilenames = append(mapTempFilenames, interFn)
 				enc, enc_ok := encoders[keyBucket]
 				if !enc_ok {
 					file, err := os.Create(interFn)
@@ -113,16 +127,22 @@ func SpawnWorker(workerId int, nReduce int,
 
 			// signal master task is finished
 			args = WorkerArgs{
-				workerId: workerId,
-				request:  "mapFinished",
-				content:  interFnPrefix,
+				WorkerId: workerId,
+				Request:  WorkerToMasterMsg[1],
+				Content:  mapTempFilenames,
 			}
 			reply = MasterReply{}
-			call("Master.Request", &args, &reply)
+			if !call("Master.Request", &args, &reply) {
+				log.Fatalf("call failed for worker: %v\n", workerId)
+			}
 
-		} else if reply.task == "reduce" {
+			if reply.Task == MasterToWorkerMsg[3] {
+				fmt.Println("acked")
+			}
+
+		} else if reply.Task == MasterToWorkerMsg[1] {
 			kva := []KeyValue{}
-			filenames := strings.Fields(reply.content)
+			filenames := reply.Content
 			for _, filename := range filenames {
 				file, err := os.Open(filename)
 
@@ -140,16 +160,34 @@ func SpawnWorker(workerId int, nReduce int,
 			}
 			sort.Sort(ByKey(kva))
 			workerReduce(workerId, reducef, kva)
-		} else if reply.task == "terminate" {
+
+			args = WorkerArgs{
+				WorkerId: workerId,
+				Request:  WorkerToMasterMsg[1],
+				Content:  []string{reply.Task},
+			}
+			reply = MasterReply{}
+			if !call("Master.Request", &args, &reply) {
+				log.Fatalf("call failed for worker: %v\n", workerId)
+			}
+
+			if reply.Task == MasterToWorkerMsg[3] {
+				fmt.Println("acked")
+			}
+
+		} else if reply.Task == MasterToWorkerMsg[2] {
 			break
+		} else if reply.Task == MasterToWorkerMsg[4] {
+			d, _ := time.ParseDuration("500ms")
+			time.Sleep(d)
 		}
 	}
 
 }
 
-func workerReduce(workerId int, reducef func(string, []string) string,
+func workerReduce(workerId string, reducef func(string, []string) string,
 	kva []KeyValue) {
-	oname := "mr-out-" + strconv.Itoa(workerId)
+	oname := "mr-out-" + workerId
 	ofile, _ := os.Create(oname)
 
 	//
