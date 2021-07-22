@@ -2,7 +2,6 @@ package mr
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -60,6 +59,7 @@ func (m *Master) Request(args *WorkerArgs, reply *MasterReply) error {
 
 	if args.Request == WorkerToMasterMsg[0] && !m.reduceFinished {
 		taskId, found := m.getReduceTask()
+		// fmt.Printf("get task:%v, %v\n", taskId, found)
 		if found {
 			reply.TaskId = taskId
 			reply.Task = MasterToWorkerMsg[1]
@@ -74,13 +74,14 @@ func (m *Master) Request(args *WorkerArgs, reply *MasterReply) error {
 	if args.Request == WorkerToMasterMsg[1] {
 		taskId := args.Content[0]
 		taskType := args.Content[1]
-		m.mu.Lock()
-		m.updateTaskStatus(taskId, taskType, taskStates[2])
-		m.mu.Unlock()
 		if taskType == MasterToWorkerMsg[0] {
 			m.addReduceTask(args.Content[2:])
 		}
 		reply.Task = MasterToWorkerMsg[3]
+
+		m.mu.Lock()
+		m.updateTaskStatus(taskId, taskType, taskStates[2])
+		m.mu.Unlock()
 		return nil
 	}
 
@@ -208,12 +209,12 @@ func (m *Master) checkStatus() error {
 		} else {
 			break
 		}
-		fmt.Printf("master status. map finished: %v; reduce finished: %v\n", m.mapFinished, m.reduceFinished)
-		if !m.mapFinished {
-			fmt.Printf("remaining map jobs: %v\n", jobsLeft)
-		} else if !m.reduceFinished {
-			fmt.Printf("remaining reduce jobs: %v\n", jobsLeft)
-		}
+		// fmt.Printf("master status. map finished: %v; reduce finished: %v\n", m.mapFinished, m.reduceFinished)
+		// if !m.mapFinished {
+		// 	fmt.Printf("remaining map jobs: %v\n", jobsLeft)
+		// } else if !m.reduceFinished {
+		// 	fmt.Printf("remaining reduce jobs: %v\n", jobsLeft)
+		// }
 	}
 
 	return nil

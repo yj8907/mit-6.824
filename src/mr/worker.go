@@ -55,8 +55,18 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 
 	nReduce, _ := strconv.Atoi(reply.Content[0])
-	for i := 0; i < 10; i++ {
-		go SpawnWorker("worker"+strconv.Itoa(i), nReduce, mapf, reducef)
+
+	count := 1
+	ch := make(chan int)
+	for i := 0; i < count; i++ {
+		go SpawnWorker(strconv.Itoa(i), nReduce, mapf, reducef, ch)
+	}
+
+	for range ch {
+		count -= 1
+		if count < 1 {
+			break
+		}
 	}
 
 }
@@ -67,7 +77,8 @@ func Worker(mapf func(string, string) []KeyValue,
 // the RPC argument and reply types are defined in rpc.go.
 //
 func SpawnWorker(workerId string, nReduce int,
-	mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+	mapf func(string, string) []KeyValue, reducef func(string, []string) string,
+	ch chan int) {
 
 	for {
 
@@ -96,11 +107,14 @@ func SpawnWorker(workerId string, nReduce int,
 				log.Fatalf("cannot read %v", filename)
 			}
 			file.Close()
+
 			kva := mapf(filename, string(content))
 			intermediate = append(intermediate, kva...)
 
 			// save map intermediate value
 			encoders := make(map[int]*json.Encoder)
+			tempFiles := make(map[int]*os.File)
+			filenames := make(map[int]string)
 			mapTempFilenames := []string{reply.TaskId, reply.Task}
 			var interFn string
 			var keyBucket int
@@ -108,21 +122,28 @@ func SpawnWorker(workerId string, nReduce int,
 			for _, kv := range intermediate {
 				keyBucket = ihash(kv.Key) % nReduce
 				interFn = interFnPrefix + "-" + strconv.Itoa(keyBucket)
-				mapTempFilenames = append(mapTempFilenames, interFn)
 				enc, enc_ok := encoders[keyBucket]
 				if !enc_ok {
-					file, err := os.Create(interFn)
+					// file, err := os.Create(interFn)
+					file, err := ioutil.TempFile("", interFn)
 					if err != nil {
 						log.Fatalf("cannot create %v\n", interFn)
 					}
+					mapTempFilenames = append(mapTempFilenames, interFn)
 					enc = json.NewEncoder(file)
 					encoders[keyBucket] = enc
+					tempFiles[keyBucket] = file
+					filenames[keyBucket] = interFn
 				}
 				err := enc.Encode(kv)
 				if err != nil {
 					os.Remove(interFn)
 					log.Fatalf("cannot encode %v\n", kv)
 				}
+			}
+			for k, file := range tempFiles {
+				file.Close()
+				os.Rename(file.Name(), filenames[k])
 			}
 
 			// signal master task is finished
@@ -136,8 +157,8 @@ func SpawnWorker(workerId string, nReduce int,
 				log.Fatalf("call failed for worker: %v\n", workerId)
 			}
 
-			if reply.Task == MasterToWorkerMsg[3] {
-				fmt.Println("acked")
+			if reply.Task != MasterToWorkerMsg[3] {
+				log.Fatal("not acked")
 			}
 
 		} else if reply.Task == MasterToWorkerMsg[1] {
@@ -145,9 +166,8 @@ func SpawnWorker(workerId string, nReduce int,
 			filenames := reply.Content
 			for _, filename := range filenames {
 				file, err := os.Open(filename)
-
 				if err != nil {
-					log.Fatalf("cannot open %v", filename)
+					log.Fatalf("cannot open %v due to error: %v\n", filename, err)
 				}
 				dec := json.NewDecoder(file)
 				for {
@@ -157,22 +177,27 @@ func SpawnWorker(workerId string, nReduce int,
 					}
 					kva = append(kva, kv)
 				}
+				file.Close()
 			}
+
 			sort.Sort(ByKey(kva))
-			workerReduce(workerId, reducef, kva)
+			tempFn, finalFn := workerReduce(reply.TaskId, reducef, kva)
+			os.Rename(tempFn, finalFn)
 
 			args = WorkerArgs{
 				WorkerId: workerId,
 				Request:  WorkerToMasterMsg[1],
-				Content:  []string{reply.Task},
+				Content:  []string{reply.TaskId, reply.Task},
 			}
 			reply = MasterReply{}
 			if !call("Master.Request", &args, &reply) {
 				log.Fatalf("call failed for worker: %v\n", workerId)
 			}
 
-			if reply.Task == MasterToWorkerMsg[3] {
-				fmt.Println("acked")
+			// fmt.Printf("worker %v call on reduce job\n", workerId)
+
+			if reply.Task != MasterToWorkerMsg[3] {
+				log.Fatal("not acked")
 			}
 
 		} else if reply.Task == MasterToWorkerMsg[2] {
@@ -182,13 +207,14 @@ func SpawnWorker(workerId string, nReduce int,
 			time.Sleep(d)
 		}
 	}
+	ch <- 1
 
 }
 
 func workerReduce(workerId string, reducef func(string, []string) string,
-	kva []KeyValue) {
+	kva []KeyValue) (string, string) {
 	oname := "mr-out-" + workerId
-	ofile, _ := os.Create(oname)
+	ofile, _ := ioutil.TempFile("", oname)
 
 	//
 	// call Reduce on each distinct key in intermediate[],
@@ -213,6 +239,7 @@ func workerReduce(workerId string, reducef func(string, []string) string,
 	}
 
 	ofile.Close()
+	return ofile.Name(), oname
 }
 
 //
