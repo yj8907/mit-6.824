@@ -310,8 +310,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	// log.Printf("sendRequestVote [%v] receive vote request from [%v]. own term: %v, request term: %v",
-	// 	rf.me, args.CandidateId, rf.currentTerm, args.Term)
+	log.Printf("sendRequestVote [%v] receive vote request from [%v]. own term: %v, request term: %v",
+		server, args.CandidateId, rf.currentTerm, args.Term)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -393,10 +393,15 @@ func (rf *Raft) attemptElection() {
 				// log.Printf("[%v] numVotes: %v at term: %v with current term: %v with %v peers\n",
 				// 	rf.me, numVotes, currTerm, rf.currentTerm, numServers)
 				if numVotes >= numServers/2 {
+					log.Printf("[%v] becomes leader\n", rf.me)
 					rf.state = Leader
 					go rf.HeartBeat()
 					go rf.updateCommitIndex()
 					rf.initPeerIndex()
+
+					// commit no-op for read only operations
+					var no_op interface{}
+					rf.Start(no_op)
 					return
 				}
 				rf.persist()
@@ -438,7 +443,7 @@ func (rf *Raft) sendEmptyAppendEntries() {
 					if done {
 						return
 					}
-					if ok || rf.killed() {
+					if ok || rf.killed() || rf.state != Leader {
 						break
 					}
 				}
@@ -452,6 +457,7 @@ func (rf *Raft) sendEmptyAppendEntries() {
 				}
 			}(server)
 		}
+
 	}
 }
 
@@ -546,6 +552,68 @@ func (rf *Raft) HeartBeat() {
 	}
 }
 
+func (rf *Raft) GetOpHearBeat() bool {
+
+	var prevLogTerm int
+	numServers := len(rf.peers)
+	rf.mu.Lock()
+	state := rf.state
+	currTerm := rf.currentTerm
+	if rf.commitIndex > 0 {
+		prevLogTerm = rf.log[rf.commitIndex-1].Term
+	}
+	rf.mu.Unlock()
+
+	voteChan := make(chan int, numServers-1)
+	abort := false
+	if rf.state == Leader {
+		for server := 0; server < numServers; server++ {
+			if server == rf.me {
+				continue
+			}
+			go func(server int) {
+				args := &AppendEntriesArgs{
+					Term:         currTerm,
+					LeaderId:     rf.me,
+					LeaderCommit: rf.commitIndex,
+					PrevLogTerm:  prevLogTerm,
+				}
+				reply := &AppendEntriesReply{}
+
+				ok := rf.callAppendEntries(server, args, reply)
+
+				if !ok || abort {
+					voteChan <- 0
+					return
+				}
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				if !reply.Success && reply.Term > rf.currentTerm {
+					abort = true
+					rf.currentTerm = reply.Term
+					rf.state = Follower
+					rf.persist()
+					voteChan <- 0
+					return
+				}
+				voteChan <- 1
+			}(server)
+		}
+
+		numVotes := 0
+		for vote := range voteChan {
+			numVotes += vote
+		}
+
+		if !abort && numVotes > (numServers-1)/2 {
+			return true
+		}
+	}
+
+	return false
+}
+
+
 func (rf *Raft) initPeerIndex() {
 
 	numServers := len(rf.peers)
@@ -557,6 +625,7 @@ func (rf *Raft) initPeerIndex() {
 		rf.matchIndex = append(rf.matchIndex, 0)
 	}
 }
+
 
 func (rf *Raft) updateCommitIndex() {
 

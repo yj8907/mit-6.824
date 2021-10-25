@@ -4,6 +4,13 @@ const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrFailed      = "ErrFailed"
+)
+
+const (
+	Append = "Append"
+	Put    = "Put"
+	Get    = "Get"
 )
 
 type Err string
@@ -16,6 +23,7 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Version int
 }
 
 type PutAppendReply struct {
